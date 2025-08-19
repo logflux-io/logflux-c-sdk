@@ -37,7 +37,11 @@ jobs:
           sudo fuser -vki /var/cache/apt/archives/lock >/dev/null 2>&1 || true
           sudo fuser -vki /var/lib/apt/lists/lock >/dev/null 2>&1 || true
           sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* >/dev/null 2>&1 || true
-          sudo dpkg --configure -a >/dev/null 2>&1 || true
+          
+          # Fix any broken package dependencies
+          sudo dpkg --configure -a || true
+          sudo apt-get update --fix-missing || true
+          sudo apt-get install -f || true
           
           sudo apt-get update
           sudo apt-get install -y uuid-dev build-essential clang
@@ -117,7 +121,11 @@ jobs:
           sudo fuser -vki /var/cache/apt/archives/lock >/dev/null 2>&1 || true
           sudo fuser -vki /var/lib/apt/lists/lock >/dev/null 2>&1 || true
           sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* >/dev/null 2>&1 || true
-          sudo dpkg --configure -a >/dev/null 2>&1 || true
+          
+          # Fix any broken package dependencies
+          sudo dpkg --configure -a || true
+          sudo apt-get update --fix-missing || true
+          sudo apt-get install -f || true
           
           sudo apt-get update
           sudo apt-get install -y uuid-dev build-essential clang valgrind
@@ -155,7 +163,11 @@ jobs:
           sudo fuser -vki /var/cache/apt/archives/lock >/dev/null 2>&1 || true
           sudo fuser -vki /var/lib/apt/lists/lock >/dev/null 2>&1 || true
           sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* >/dev/null 2>&1 || true
-          sudo dpkg --configure -a >/dev/null 2>&1 || true
+          
+          # Fix any broken package dependencies
+          sudo dpkg --configure -a || true
+          sudo apt-get update --fix-missing || true
+          sudo apt-get install -f || true
           
           sudo apt-get update
           sudo apt-get install -y gcc-${{ matrix.target }}
@@ -190,7 +202,11 @@ jobs:
           sudo fuser -vki /var/cache/apt/archives/lock >/dev/null 2>&1 || true
           sudo fuser -vki /var/lib/apt/lists/lock >/dev/null 2>&1 || true
           sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* >/dev/null 2>&1 || true
-          sudo dpkg --configure -a >/dev/null 2>&1 || true
+          
+          # Fix any broken package dependencies
+          sudo dpkg --configure -a || true
+          sudo apt-get update --fix-missing || true
+          sudo apt-get install -f || true
           
           sudo apt-get update
           sudo apt-get install -y uuid-dev build-essential clang gcovr
