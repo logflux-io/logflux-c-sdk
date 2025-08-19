@@ -1,0 +1,197 @@
+name: C SDK Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test C SDK
+    runs-on: [self-hosted, linux, arm64, docker]
+    strategy:
+      matrix:
+        os: [linux]
+        compiler: [gcc, clang]
+        include:
+          - os: linux
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: linux
+            compiler: clang
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential clang
+
+      - name: Set compiler
+        run: |
+          echo "CC=${{ matrix.cc }}" >> $GITHUB_ENV
+          echo "CXX=${{ matrix.cxx }}" >> $GITHUB_ENV
+
+      - name: Compile test suite
+        run: |
+          ${{ matrix.cc }} -std=c99 -Wall -Wextra -Werror -O2 -I. \
+            -o test_client \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+
+      - name: Run unit tests
+        run: ./test_client
+
+      - name: Compile with different optimization levels
+        run: |
+          # Test with -O0 (no optimization)
+          ${{ matrix.cc }} -std=c99 -Wall -Wextra -Werror -O0 -I. \
+            -o test_client_O0 \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+          ./test_client_O0
+
+          # Test with -O3 (maximum optimization)
+          ${{ matrix.cc }} -std=c99 -Wall -Wextra -Werror -O3 -I. \
+            -o test_client_O3 \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+          ./test_client_O3
+
+      - name: Test with AddressSanitizer
+        if: matrix.compiler == 'gcc'
+        run: |
+          ${{ matrix.cc }} -std=c99 -Wall -Wextra -O2 -I. \
+            -fsanitize=address -fno-omit-frame-pointer \
+            -o test_client_asan \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+          ASAN_OPTIONS=detect_leaks=1 ./test_client_asan
+
+      - name: Test with UndefinedBehaviorSanitizer
+        if: matrix.compiler == 'clang'
+        run: |
+          ${{ matrix.cc }} -std=c99 -Wall -Wextra -O2 -I. \
+            -fsanitize=undefined \
+            -o test_client_ubsan \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+          ./test_client_ubsan
+
+      - name: Static analysis with cppcheck
+        if: matrix.compiler == 'gcc'
+        run: |
+          sudo apt-get install -y cppcheck
+          cppcheck --enable=all --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            logflux_client.c logflux_client.h
+
+  valgrind-test:
+    name: Memory leak detection
+    runs-on: [self-hosted, linux, arm64, docker]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential clang valgrind
+
+      - name: Compile test suite
+        run: |
+          gcc -std=c99 -Wall -Wextra -O2 -g -I. \
+            -o test_client \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+
+      - name: Run tests with Valgrind
+        run: |
+          valgrind --leak-check=full --show-leak-kinds=all \
+            --error-exitcode=1 --track-origins=yes \
+            ./test_client
+
+  cross-compile:
+    name: Cross compilation test
+    runs-on: [self-hosted, linux, arm64, docker]
+    strategy:
+      matrix:
+        target: [aarch64-linux-gnu, arm-linux-gnueabihf]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-${{ matrix.target }}
+
+      - name: Cross-compile C SDK
+        run: |
+          ${{ matrix.target }}-gcc -std=c99 -Wall -Wextra -O2 \
+            -c logflux_client.c -o logflux_client.o
+          
+          # Verify object file was created
+          file logflux_client.o
+          
+          # Create static library
+          ${{ matrix.target }}-ar rcs liblogflux.a logflux_client.o
+          
+          # Verify library file
+          file liblogflux.a
+          ${{ matrix.target }}-ar t liblogflux.a
+
+  coverage:
+    name: Code coverage
+    runs-on: [self-hosted, linux, arm64, docker]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential clang gcovr
+
+      - name: Compile with coverage
+        run: |
+          gcc -std=c99 -Wall -Wextra -O0 -I. \
+            --coverage -fprofile-arcs -ftest-coverage \
+            -o test_client \
+            tests/test_client.c logflux_client.c \
+            -luuid -lpthread
+
+      - name: Run tests
+        run: ./test_client
+
+      - name: Generate coverage report
+        run: |
+          gcovr --root . --print-summary --xml coverage.xml --html-details coverage.html
+          
+          # Display coverage summary
+          gcovr --root . --print-summary
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage.html
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@v3
+        with:
+          files: coverage.xml
+          flags: c-sdk
+          name: c-sdk-coverage

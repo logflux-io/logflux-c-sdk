@@ -1,0 +1,199 @@
+name: C SDK Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-libraries:
+    name: Build C SDK Libraries
+    runs-on: [self-hosted, linux, arm64, docker]
+    strategy:
+      matrix:
+        os: [linux]
+        arch: [x64, arm64]
+        library-type: [static, shared]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential
+
+      - name: Install ARM64 cross-compilation tools
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build static library
+        if: matrix.library-type == 'static'
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CC=aarch64-linux-gnu-gcc
+            AR=aarch64-linux-gnu-ar
+          else
+            CC=gcc
+            AR=ar
+          fi
+          
+          # Compile object file
+          $CC -std=c99 -Wall -Wextra -Werror -O2 -fPIC \
+            -c logflux_client.c -o logflux_client.o
+          
+          # Create static library
+          $AR rcs liblogflux.a logflux_client.o
+          
+          # Verify library
+          file liblogflux.a
+          $AR t liblogflux.a
+
+      - name: Build shared library
+        if: matrix.library-type == 'shared'
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CC=aarch64-linux-gnu-gcc
+          else
+            CC=gcc
+          fi
+          
+          # Compile shared library
+          $CC -std=c99 -Wall -Wextra -Werror -O2 -fPIC -shared \
+            logflux_client.c -o liblogflux.so \
+            -luuid -lpthread
+          
+          # Verify library
+          file liblogflux.so
+
+      - name: Build example program
+        if: matrix.arch == 'x64'
+        run: |
+          # Build example with static library
+          if [ "${{ matrix.library-type }}" = "static" ]; then
+            gcc -std=c99 -Wall -Wextra -O2 -I. \
+              -o basic_example \
+              examples/basic.c liblogflux.a \
+              -luuid -lpthread
+          else
+            # Build example with shared library
+            gcc -std=c99 -Wall -Wextra -O2 -I. \
+              -o basic_example \
+              examples/basic.c -L. -llogflux \
+              -luuid -lpthread
+          fi
+          
+          # Verify executable
+          file basic_example
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-sdk-linux-${{ matrix.arch }}-${{ matrix.library-type }}
+          path: |
+            liblogflux.*
+            basic_example
+
+  build-packages:
+    name: Build distribution packages
+    runs-on: [self-hosted, linux, arm64, docker]
+    needs: build-libraries
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential tar gzip
+
+      - name: Create distribution structure
+        run: |
+          # Create distribution directory
+          mkdir -p dist/logflux-c-sdk-${GITHUB_SHA::8}/{lib,include,examples,docs}
+          
+          # Copy header files
+          cp logflux_client.h dist/logflux-c-sdk-${GITHUB_SHA::8}/include/
+          
+          # Copy documentation
+          cp README.md dist/logflux-c-sdk-${GITHUB_SHA::8}/docs/
+          
+          # Copy examples
+          cp -r examples/* dist/logflux-c-sdk-${GITHUB_SHA::8}/examples/
+
+      - name: Build libraries for distribution
+        run: |
+          # Build static library
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -fPIC \
+            -c logflux_client.c -o logflux_client.o
+          ar rcs dist/logflux-c-sdk-${GITHUB_SHA::8}/lib/liblogflux.a logflux_client.o
+          
+          # Build shared library
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -fPIC -shared \
+            logflux_client.c -o dist/logflux-c-sdk-${GITHUB_SHA::8}/lib/liblogflux.so \
+            -luuid -lpthread
+
+      - name: Create tarball
+        working-directory: dist
+        run: |
+          tar -czf logflux-c-sdk-${GITHUB_SHA::8}.tar.gz logflux-c-sdk-${GITHUB_SHA::8}/
+          
+          # Create checksums
+          sha256sum logflux-c-sdk-${GITHUB_SHA::8}.tar.gz > logflux-c-sdk-${GITHUB_SHA::8}.tar.gz.sha256
+
+      - name: Upload distribution package
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-sdk-distribution
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  build-documentation:
+    name: Generate documentation
+    runs-on: [self-hosted, linux, arm64, docker]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+
+      - name: Create Doxyfile
+        run: |
+          mkdir -p docs/api
+          cat > Doxyfile << 'EOF'
+          PROJECT_NAME           = "LogFlux C SDK"
+          PROJECT_NUMBER         = "1.0.0"
+          PROJECT_BRIEF          = "C SDK for LogFlux Agent"
+          OUTPUT_DIRECTORY       = docs/api
+          INPUT                  = logflux_client.h logflux_client.c
+          RECURSIVE              = NO
+          EXTRACT_ALL            = YES
+          EXTRACT_STATIC         = YES
+          GENERATE_HTML          = YES
+          GENERATE_LATEX         = NO
+          GENERATE_XML           = YES
+          HAVE_DOT               = YES
+          CALL_GRAPH             = YES
+          CALLER_GRAPH           = YES
+          HTML_TIMESTAMP         = YES
+          OPTIMIZE_OUTPUT_FOR_C  = YES
+          EOF
+
+      - name: Generate documentation
+        run: doxygen Doxyfile
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-sdk-documentation
+          path: docs/api/
