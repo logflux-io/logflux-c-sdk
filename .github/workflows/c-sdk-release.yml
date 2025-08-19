@@ -1,0 +1,308 @@
+name: C SDK Release
+
+on:
+  push:
+    tags:
+      - 'c-sdk-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build-release:
+    name: Build release artifacts
+    runs-on: [self-hosted, linux, arm64, docker]
+    strategy:
+      matrix:
+        arch: [x64, arm64, armv7]
+        
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev build-essential tar gzip
+
+      - name: Install cross-compilation tools
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          elif [ "${{ matrix.arch }}" = "armv7" ]; then
+            sudo apt-get install -y gcc-arm-linux-gnueabihf
+          fi
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION=${GITHUB_REF#refs/tags/c-sdk-v}
+          else
+            VERSION=${{ github.event.inputs.version }}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build libraries
+        working-directory: sdk/c
+        run: |
+          # Set compiler based on architecture
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CC=aarch64-linux-gnu-gcc
+            AR=aarch64-linux-gnu-ar
+            ARCH_SUFFIX=arm64
+          elif [ "${{ matrix.arch }}" = "armv7" ]; then
+            CC=arm-linux-gnueabihf-gcc
+            AR=arm-linux-gnueabihf-ar
+            ARCH_SUFFIX=armv7
+          else
+            CC=gcc
+            AR=ar
+            ARCH_SUFFIX=x64
+          fi
+          
+          # Create build directory
+          mkdir -p build/$ARCH_SUFFIX
+          
+          # Build static library
+          $CC -std=c99 -Wall -Wextra -Werror -O2 -fPIC \
+            -DLOGFLUX_VERSION=\"${{ env.VERSION }}\" \
+            -c logflux_client.c -o build/$ARCH_SUFFIX/logflux_client.o
+          $AR rcs build/$ARCH_SUFFIX/liblogflux.a build/$ARCH_SUFFIX/logflux_client.o
+          
+          # Build shared library
+          $CC -std=c99 -Wall -Wextra -Werror -O2 -fPIC -shared \
+            -DLOGFLUX_VERSION=\"${{ env.VERSION }}\" \
+            logflux_client.c -o build/$ARCH_SUFFIX/liblogflux.so \
+            -luuid -lpthread
+          
+          # Verify libraries
+          file build/$ARCH_SUFFIX/liblogflux.a
+          file build/$ARCH_SUFFIX/liblogflux.so
+
+      - name: Create release package
+        working-directory: sdk/c
+        run: |
+          ARCH_SUFFIX=${{ matrix.arch }}
+          PACKAGE_NAME=logflux-c-sdk-${{ env.VERSION }}-linux-$ARCH_SUFFIX
+          
+          # Create package directory structure
+          mkdir -p dist/$PACKAGE_NAME/{lib,include,examples,docs}
+          
+          # Copy files
+          cp logflux_client.h dist/$PACKAGE_NAME/include/
+          cp build/$ARCH_SUFFIX/liblogflux.* dist/$PACKAGE_NAME/lib/
+          cp -r examples/* dist/$PACKAGE_NAME/examples/
+          cp README.md dist/$PACKAGE_NAME/docs/
+          
+          # Create LICENSE file
+          cat > dist/$PACKAGE_NAME/LICENSE << 'EOF'
+          Apache License
+          Version 2.0, January 2004
+          http://www.apache.org/licenses/
+          EOF
+          
+          # Create VERSION file
+          echo "${{ env.VERSION }}" > dist/$PACKAGE_NAME/VERSION
+          
+          # Create tarball
+          cd dist
+          tar -czf $PACKAGE_NAME.tar.gz $PACKAGE_NAME/
+          
+          # Create checksums
+          sha256sum $PACKAGE_NAME.tar.gz > $PACKAGE_NAME.tar.gz.sha256
+          md5sum $PACKAGE_NAME.tar.gz > $PACKAGE_NAME.tar.gz.md5
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-${{ matrix.arch }}
+          path: |
+            sdk/c/dist/*.tar.gz
+            sdk/c/dist/*.sha256
+            sdk/c/dist/*.md5
+
+  test-release:
+    name: Test release artifacts
+    needs: build-release
+    runs-on: [self-hosted, linux, arm64, docker]
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-${{ matrix.arch }}
+          path: ./release
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION=${GITHUB_REF#refs/tags/c-sdk-v}
+          else
+            VERSION=${{ github.event.inputs.version }}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Extract and test package
+        run: |
+          # Extract package
+          cd release
+          tar -xzf logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz
+          
+          # Verify contents
+          ls -la logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}/
+          
+          # Test static library
+          file logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}/lib/liblogflux.a
+          ar t logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}/lib/liblogflux.a
+          
+          # Test shared library
+          file logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}/lib/liblogflux.so
+          
+          # Verify checksums
+          sha256sum -c logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz.sha256
+          md5sum -c logflux-c-sdk-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz.md5
+
+  create-github-release:
+    name: Create GitHub Release
+    needs: test-release
+    runs-on: [self-hosted, linux, arm64, docker]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION=${GITHUB_REF#refs/tags/c-sdk-v}
+          else
+            VERSION=${{ github.event.inputs.version }}
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find artifacts -name "*.tar.gz" -o -name "*.sha256" -o -name "*.md5" | \
+            xargs -I {} cp {} release-files/
+
+      - name: Generate release notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          # LogFlux C SDK v${{ env.VERSION }}
+          
+          ## Release Artifacts
+          
+          This release includes pre-built libraries for Linux on multiple architectures:
+          
+          - **x64** (AMD64): Intel/AMD 64-bit processors
+          - **arm64** (AArch64): ARM 64-bit processors
+          - **armv7** (ARMv7): ARM 32-bit processors
+          
+          ## Installation
+          
+          1. Download the appropriate package for your architecture
+          2. Extract the tarball: `tar -xzf logflux-c-sdk-${{ env.VERSION }}-linux-<arch>.tar.gz`
+          3. Copy headers to your include path: `cp include/* /usr/local/include/`
+          4. Copy libraries to your lib path: `cp lib/* /usr/local/lib/`
+          
+          ## What's Included
+          
+          Each package contains:
+          - Static library (`liblogflux.a`)
+          - Shared library (`liblogflux.so`)
+          - Header files
+          - Example code
+          - Documentation
+          
+          ## Verification
+          
+          All packages include SHA256 and MD5 checksums for verification:
+          ```bash
+          sha256sum -c logflux-c-sdk-${{ env.VERSION }}-linux-<arch>.tar.gz.sha256
+          md5sum -c logflux-c-sdk-${{ env.VERSION }}-linux-<arch>.tar.gz.md5
+          ```
+          
+          ## Requirements
+          
+          - C99 compatible compiler
+          - libuuid
+          - POSIX-compliant system
+          
+          ## License
+          
+          Apache License 2.0
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: c-sdk-v${{ env.VERSION }}
+          name: C SDK v${{ env.VERSION }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-documentation:
+    name: Publish documentation
+    needs: create-github-release
+    runs-on: [self-hosted, linux, arm64, docker]
+    if: github.event_name == 'push'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+
+      - name: Generate documentation
+        working-directory: sdk/c
+        run: |
+          # Create Doxyfile with version
+          cat > Doxyfile << 'EOF'
+          PROJECT_NAME           = "LogFlux C SDK"
+          PROJECT_NUMBER         = "${{ env.VERSION }}"
+          PROJECT_BRIEF          = "C SDK for LogFlux Agent"
+          OUTPUT_DIRECTORY       = docs/api
+          INPUT                  = logflux_client.h logflux_client.c README.md
+          USE_MDFILE_AS_MAINPAGE = README.md
+          RECURSIVE              = NO
+          EXTRACT_ALL            = YES
+          EXTRACT_STATIC         = YES
+          GENERATE_HTML          = YES
+          GENERATE_LATEX         = NO
+          GENERATE_XML           = YES
+          HAVE_DOT               = YES
+          CALL_GRAPH             = YES
+          CALLER_GRAPH           = YES
+          HTML_TIMESTAMP         = YES
+          OPTIMIZE_OUTPUT_FOR_C  = YES
+          EOF
+          
+          doxygen Doxyfile
+
+      - name: Deploy documentation to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: sdk/c/docs/api/html
+          destination_dir: c-sdk/${{ env.VERSION }}
+          keep_files: true
