@@ -12,6 +12,7 @@ jobs:
     name: Build C SDK Libraries
     runs-on: [self-hosted, linux, arm64, docker]
     strategy:
+      max-parallel: 1
       matrix:
         os: [linux]
         arch: [x64, arm64]
@@ -157,6 +158,7 @@ jobs:
   build-documentation:
     name: Generate documentation
     runs-on: [self-hosted, linux, arm64, docker]
+    needs: build-packages
     
     steps:
       - name: Checkout repository
