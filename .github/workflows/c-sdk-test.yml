@@ -12,6 +12,7 @@ jobs:
     name: Test C SDK
     runs-on: [self-hosted, linux, arm64, docker]
     strategy:
+      max-parallel: 1
       matrix:
         os: [linux]
         compiler: [gcc, clang]
@@ -97,6 +98,7 @@ jobs:
   valgrind-test:
     name: Memory leak detection
     runs-on: [self-hosted, linux, arm64, docker]
+    needs: test
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -122,7 +124,9 @@ jobs:
   cross-compile:
     name: Cross compilation test
     runs-on: [self-hosted, linux, arm64, docker]
+    needs: valgrind-test
     strategy:
+      max-parallel: 1
       matrix:
         target: [aarch64-linux-gnu, arm-linux-gnueabihf]
     
@@ -153,6 +157,7 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: [self-hosted, linux, arm64, docker]
+    needs: cross-compile
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
